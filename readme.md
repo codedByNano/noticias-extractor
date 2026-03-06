@@ -45,7 +45,7 @@ ollama create extractor-diarios -f models/Modelfile
 
 para cargar el modelo localmente
 
-- En la misma terminal cargar el entorno de phyton **volviendo a la carpeta raiz**:
+- Cargar el entorno de phyton **volviendo a la carpeta raiz**:
 
 ```bash
 py -3.11 -m venv venv
