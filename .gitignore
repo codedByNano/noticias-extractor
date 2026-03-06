@@ -1,0 +1,9 @@
+venv/
+.env
+model/*.gguf
+data/*.pdf
+output/*.json
+error_log_*.txt
+__pycache__/
+*.py[cod]
+*$py.class
