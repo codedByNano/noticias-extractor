@@ -1,6 +1,6 @@
 FROM ./AI-newspaper-extractor-quantized.gguf
 
-PARAMETER temperature 0
+PARAMETER temperature 0.1
 PARAMETER stop "<|im_start|>"
 PARAMETER stop "<|im_end|>"
 

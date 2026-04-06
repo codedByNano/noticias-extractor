@@ -4,6 +4,8 @@ import io
 import os
 import glob
 import re
+import gc
+import time
 from pdf2image import convert_from_path
 
 MODEL_NAME = "extractor-diarios"
@@ -22,8 +24,6 @@ REGLAS:
 4. CONTINUIDAD: 
    - Si la noticia sigue en otra página: "estado": "continua".
    - Si es el final de una noticia previa: "estado": "es_continuacion".
-
-JSON: [{"titulo": "...", "texto": "...", "seccion": "...", "estado": "..."}]
 """
 
 def slugify(text):
@@ -39,33 +39,37 @@ def extraer_json_limpio(texto):
         if match: return json.loads(match.group(1))
         match = re.search(r'(\{.*\})', texto, re.DOTALL)
         if match: return [json.loads(match.group(1))]
-    except:
+    except Exception:
         pass
     return []
 
 def procesar_ejemplar(pdf_path):
     nombre = os.path.basename(pdf_path)
-    print(f"\n--- {nombre} ---")
+    print(f"\n Iniciando extracción: {nombre}")
     
     try:
         paginas = convert_from_path(
             pdf_path, 
-            dpi=200, 
+            dpi=150, 
             poppler_path=POPPLER_PATH if os.path.exists(POPPLER_PATH) else None
         )
     except Exception as e:
-        print(f"Error Poppler: {e}")
+        print(f" Error Poppler: {e}")
         return
 
     mapa_noticias = {} 
 
     for i, pagina in enumerate(paginas):
         nro = i + 1
-        print(f"Pág {nro}/{len(paginas)}...", end="\r")
+        print(f"Procesando Pág {nro}/{len(paginas)}...", end="\r")
         
         buf = io.BytesIO()
-        pagina.save(buf, format='JPEG', quality=85)
+        pagina.save(buf, format='JPEG', quality=75)
         img_bytes = buf.getvalue()
+        
+        buf.close()
+        del buf
+        gc.collect()
 
         try:
             respuesta = ollama.generate(
@@ -73,7 +77,12 @@ def procesar_ejemplar(pdf_path):
                 prompt=f"{PROMPT_SISTEMA}\nPÁGINA {nro}.",
                 images=[img_bytes],
                 format="json",
-                options={"temperature": 0, "num_ctx": 16384, "num_predict": -1}
+                options={
+                    "temperature": 0, 
+                    "num_ctx": 4096,
+                    "num_predict": -1,
+                    "low_vram": True
+                }
             )
 
             noticias_extraidas = extraer_json_limpio(respuesta.get('response', ''))
@@ -88,28 +97,33 @@ def procesar_ejemplar(pdf_path):
 
                 if noticia_id in mapa_noticias and (estado == "es_continuacion" or "continuacion" in titulo.lower()):
                     mapa_noticias[noticia_id]["texto"] += "\n\n" + str(cuerpo)
-                    if nro not in mapa_noticias[noticia_id]["paginas"]:
-                        mapa_noticias[noticia_id]["paginas"].append(nro)
+                    if nro not in mapa_noticias[noticia_id].get("paginas", []):
+                        mapa_noticias[noticia_id].setdefault("paginas", []).append(nro)
                 else:
                     n["paginas"] = [nro]
                     n["id_interno"] = noticia_id
                     mapa_noticias[noticia_id] = n
 
+            time.sleep(0.5)
+
         except Exception as e:
-            print(f"\nError Pág {nro}: {e}")
+            print(f"\n Error Pág {nro}: {e}")
+            time.sleep(2) 
 
     final = list(mapa_noticias.values())
+    if not os.path.exists(OUTPUT_DIR): os.makedirs(OUTPUT_DIR)
     out_file = os.path.join(OUTPUT_DIR, f"resultado_{os.path.splitext(nombre)[0]}.json")
     
-    if not os.path.exists(OUTPUT_DIR): os.makedirs(OUTPUT_DIR)
     with open(out_file, "w", encoding="utf-8") as f:
         json.dump(final, f, ensure_ascii=False, indent=4)
     
-    print(f"\nFinalizado. Noticias: {len(final)}")
+    print(f"\n Finalizado. Noticias unificadas: {len(final)}")
 
 def main():
     pdfs = glob.glob(os.path.join(INPUT_DIR, "*.pdf"))
-    if not pdfs: return
+    if not pdfs:
+        print(f"No se encontraron archivos PDF en {INPUT_DIR}")
+        return
     for p in pdfs:
         procesar_ejemplar(p)
 

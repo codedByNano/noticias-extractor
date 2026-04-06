@@ -25,7 +25,7 @@ El extractor no es un simple "lector de texto", es un **Pipeline de Visión Arti
 
 ## Guía de Instalación
 
-1. Dependencias de Sistema
+1. Antes de empezar
 
 - Para que Python pueda "dibujar" el PDF necesita **Poppler**. [Poppler for Windows](https://github.com/oschwartz10612/poppler-windows/releases/).
   Extrae y Agrega `\poppler\Library\bin` a tus Variables de Entorno (PATH).
@@ -36,26 +36,24 @@ El extractor no es un simple "lector de texto", es un **Pipeline de Visión Arti
 
 - Instala [Ollama](https://ollama.com)
 
-- Abrir una terminal en la raíz del proyecto y ejecutar:
-
-```bash
-cd model
-ollama create extractor-diarios -f models/Modelfile
-```
-
-para cargar el modelo localmente
-
-- Cargar el entorno de phyton **volviendo a la carpeta raiz**:
+- Cargar el entorno de phyton desde la carpeta raiz:
 
 ```bash
 py -3.11 -m venv venv
 .\venv\Scripts\activate
 pip install ollama pdf2image pillow
 ```
+- Para cargar el modelo localmente ejecutar en el CLI:
+
+```bash
+ollama create extractor-diarios -f model/Modelfile
+```
+
+una vez cargado está listo para su uso
 
 ## Uso
 
-1. **Cargar el PDF:** Colocar el archivo dentro de la carpeta `data/`.
+1. **Cargar el PDF:** Colocar el archivo a extraer dentro de la carpeta `data/`.
 2. **Inicializar el entorno**
 
 ```bash
@@ -65,7 +63,7 @@ pip install ollama pdf2image pillow
 3. **Lanzar el script:**
 
 ```bash
-   python scripts/main.py
+   python main.py
 ```
 
 ## BLoque de salida esperado (ejemplo con test.pdf)
