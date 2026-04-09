@@ -6,124 +6,179 @@ import glob
 import re
 import gc
 import time
+import subprocess
 from pdf2image import convert_from_path
 
+# Configuración de constantes y rutas del sistema
 MODEL_NAME = "extractor-diarios"
 POPPLER_PATH = r"F:\Poppler\Library\bin"
 INPUT_DIR = "data"
 OUTPUT_DIR = "output"
+TEMP_DIR = os.path.join(OUTPUT_DIR, "temp_pages")
 
+# Definición del Prompt de Sistema para el modelo de visión
 PROMPT_SISTEMA = """
-ERES UN ANALISTA DE MEDIOS GRÁFICOS. TRABAJAS SOBRE UN DIARIO COMPLETO.
-IDENTIFICA Y EXTRAE CADA ARTÍCULO PERIODÍSTICO DE LA IMAGEN.
+ACTÚA COMO UN EXPERTO EN DIAGRAMACIÓN DE MEDIOS IMPRESOS.
+OBJETIVO: ANALIZAR LA IMAGEN DE UNA PÁGINA DE DIARIO Y EXTRAER LA INFORMACIÓN PERIODÍSTICA.
 
-REGLAS:
-1. TRANSCRIPCIÓN LITERAL Y COMPLETA. NO RESUMAS.
-2. FORMATO: LISTA DE OBJETOS JSON.
-3. CAMPOS: "titulo", "texto", "seccion", "estado".
-4. CONTINUIDAD: 
-   - Si la noticia sigue en otra página: "estado": "continua".
-   - Si es el final de una noticia previa: "estado": "es_continuacion".
+REGLAS DE EXTRACCIÓN:
+1. EXCLUIR: ANUNCIOS, BANNERS, AVISOS CLASIFICADOS Y FÚNEBRES.
+2. CAMPOS OBLIGATORIOS: TITULO, CUERPO (TEXTO), SECCIÓN.
+3. CAMPOS ADICIONALES: VOLANTA, BAJADA, EPÍGRAFES, DESTACADOS Y AUTOR (SI ESTÁN PRESENTES).
+4. REQUISITO: TRANSCRIPCIÓN LITERAL Y COMPLETA. PROHIBIDO RESUMIR.
+5. FORMATO DE SALIDA: LISTA DE OBJETOS JSON.
+
+GESTIÓN DE CONTINUIDAD:
+- "estado": "continua" (si la noticia prosigue en otra página).
+- "estado": "es_continuacion" (si la noticia es remanente de una página previa).
+- "estado": "completa" (caso por defecto).
+
+JSON SCHEMA: [{"titulo": "string", "volanta": "string", "bajada": "string", "texto": "string", "autor": "string", "seccion": "string", "estado": "string"}]
 """
 
 def slugify(text):
-    if not text or not isinstance(text, str): return "sin-titulo"
+    """Genera un identificador único normalizado para cada noticia."""
+    if not text or not isinstance(text, str):
+        return "sin-titulo"
     text = text.lower()
     text = re.sub(r'[^\w\s-]', '', text)
     return re.sub(r'[-\s]+', '-', text).strip('-')[:40]
 
 def extraer_json_limpio(texto):
-    if not texto: return []
+    """Parsea la respuesta del modelo para extraer estructuras JSON válidas."""
+    if not texto:
+        return []
     try:
         match = re.search(r'(\[.*\])', texto, re.DOTALL)
-        if match: return json.loads(match.group(1))
+        if match:
+            return json.loads(match.group(1))
         match = re.search(r'(\{.*\})', texto, re.DOTALL)
-        if match: return [json.loads(match.group(1))]
-    except Exception:
+        if match:
+            return [json.loads(match.group(1))]
+    except (json.JSONDecodeError, AttributeError):
         pass
     return []
 
-def procesar_ejemplar(pdf_path):
-    nombre = os.path.basename(pdf_path)
-    print(f"\n Iniciando extracción: {nombre}")
-    
+def liberar_vram_total():
+    """Finaliza el proceso del modelo en Ollama para liberar memoria de video."""
     try:
-        paginas = convert_from_path(
-            pdf_path, 
-            dpi=150, 
-            poppler_path=POPPLER_PATH if os.path.exists(POPPLER_PATH) else None
-        )
-    except Exception as e:
-        print(f" Error Poppler: {e}")
-        return
+        subprocess.run(["ollama", "stop", MODEL_NAME], capture_output=True, check=False)
+        time.sleep(3)
+        gc.collect()
+    except Exception:
+        pass
 
-    mapa_noticias = {} 
+def unificar_resultados(nombre_base):
+    """Consolida los archivos temporales de páginas individuales en un único reporte."""
+    mapa_noticias = {}
+    archivos_temp = glob.glob(os.path.join(TEMP_DIR, f"{nombre_base}_p*.json"))
+    archivos_temp.sort(key=lambda x: int(re.search(r'_p(\d+)\.json', x).group(1)))
+
+    for archivo in archivos_temp:
+        with open(archivo, "r", encoding="utf-8") as f:
+            try:
+                data_json = json.load(f)
+                nro_pag = int(re.search(r'_p(\d+)\.json', archivo).group(1))
+                for n in data_json:
+                    if not isinstance(n, dict):
+                        continue
+                    
+                    titulo = n.get("titulo", "Sin Titulo")
+                    noticia_id = slugify(titulo)
+                    
+                    if noticia_id in mapa_noticias and (n.get("estado") == "es_continuacion" or "continuacion" in titulo.lower()):
+                        mapa_noticias[noticia_id]["texto"] += "\n\n" + str(n.get("texto", ""))
+                        if nro_pag not in mapa_noticias[noticia_id].get("paginas", []):
+                            mapa_noticias[noticia_id].setdefault("paginas", []).append(nro_pag)
+                    else:
+                        n["paginas"] = [nro_pag]
+                        mapa_noticias[noticia_id] = n
+            except (json.JSONDecodeError, IOError):
+                continue
+                
+    return list(mapa_noticias.values())
+
+def procesar_ejemplar(pdf_path):
+    """Ejecuta el pipeline de procesamiento para un archivo PDF completo."""
+    nombre_base = os.path.splitext(os.path.basename(pdf_path))[0]
+    if not os.path.exists(TEMP_DIR):
+        os.makedirs(TEMP_DIR)
+    
+    print(f"Iniciando procesamiento: {nombre_base}")
+    liberar_vram_total()
+
+    try:
+        # Configuración de resolución optimizada para OCR
+        paginas = convert_from_path(pdf_path, dpi=150, poppler_path=POPPLER_PATH)
+    except Exception as e:
+        print(f"Error en conversión de PDF: {e}")
+        return
 
     for i, pagina in enumerate(paginas):
         nro = i + 1
-        print(f"Procesando Pág {nro}/{len(paginas)}...", end="\r")
+        temp_file = os.path.join(TEMP_DIR, f"{nombre_base}_p{nro}.json")
+        
+        if os.path.exists(temp_file):
+            continue
+
+        if nro > 1 and nro % 2 == 0:
+            liberar_vram_total()
+
+        print(f"Procesando página {nro}/{len(paginas)}...", end="\r")
         
         buf = io.BytesIO()
-        pagina.save(buf, format='JPEG', quality=75)
+        pagina.save(buf, format='JPEG', quality=85)
         img_bytes = buf.getvalue()
-        
         buf.close()
-        del buf
-        gc.collect()
 
         try:
-            respuesta = ollama.generate(
+            res = ollama.generate(
                 model=MODEL_NAME,
-                prompt=f"{PROMPT_SISTEMA}\nPÁGINA {nro}.",
+                prompt=f"{PROMPT_SISTEMA}\nPAGINA {nro}.",
                 images=[img_bytes],
                 format="json",
                 options={
                     "temperature": 0, 
-                    "num_ctx": 4096,
+                    "num_ctx": 8192,
                     "num_predict": -1,
                     "low_vram": True
                 }
             )
 
-            noticias_extraidas = extraer_json_limpio(respuesta.get('response', ''))
-            
-            for n in noticias_extraidas:
-                if not isinstance(n, dict): continue
+            data = extraer_json_limpio(res.get('response', ''))
+            with open(temp_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
 
-                titulo = n.get("titulo", "Sin Título")
-                cuerpo = n.get("texto", "")
-                estado = n.get("estado", "completa")
-                noticia_id = slugify(titulo)
-
-                if noticia_id in mapa_noticias and (estado == "es_continuacion" or "continuacion" in titulo.lower()):
-                    mapa_noticias[noticia_id]["texto"] += "\n\n" + str(cuerpo)
-                    if nro not in mapa_noticias[noticia_id].get("paginas", []):
-                        mapa_noticias[noticia_id].setdefault("paginas", []).append(nro)
-                else:
-                    n["paginas"] = [nro]
-                    n["id_interno"] = noticia_id
-                    mapa_noticias[noticia_id] = n
-
-            time.sleep(0.5)
+            del img_bytes
+            gc.collect()
 
         except Exception as e:
-            print(f"\n Error Pág {nro}: {e}")
-            time.sleep(2) 
+            print(f"\nError en ejecución de modelo (Página {nro}): {e}")
+            liberar_vram_total()
+            break
 
-    final = list(mapa_noticias.values())
-    if not os.path.exists(OUTPUT_DIR): os.makedirs(OUTPUT_DIR)
-    out_file = os.path.join(OUTPUT_DIR, f"resultado_{os.path.splitext(nombre)[0]}.json")
+    resultado_final = unificar_resultados(nombre_base)
+    out_file = os.path.join(OUTPUT_DIR, f"resultado_{nombre_base}.json")
     
+    if not os.path.exists(OUTPUT_DIR):
+        os.makedirs(OUTPUT_DIR)
+        
     with open(out_file, "w", encoding="utf-8") as f:
-        json.dump(final, f, ensure_ascii=False, indent=4)
+        json.dump(resultado_final, f, ensure_ascii=False, indent=4)
     
-    print(f"\n Finalizado. Noticias unificadas: {len(final)}")
+    print(f"\nProceso finalizado. Salida en: {out_file}")
 
 def main():
+    """Punto de entrada principal del script."""
+    if not os.path.exists(INPUT_DIR):
+        print(f"Error: No se encuentra el directorio de entrada {INPUT_DIR}")
+        return
+        
     pdfs = glob.glob(os.path.join(INPUT_DIR, "*.pdf"))
     if not pdfs:
-        print(f"No se encontraron archivos PDF en {INPUT_DIR}")
+        print("No se detectaron archivos PDF para procesar.")
         return
+        
     for p in pdfs:
         procesar_ejemplar(p)
 
