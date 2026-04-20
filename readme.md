@@ -1,9 +1,7 @@
-python -m venv venv
+pip install pdf2image pillow opencv-python requests python-doctr[torch] torchvision
 
-.\venv\Scripts\Activate
+Poppler (https://github.com/oschwartz10612/poppler-windows/releases/) [AGREGAR A PATH]
 
-pip install ollama pymupdf pillow tqdm
+Ollama (https://ollama.com/download)
 
-ollama pull llama3.2-vision
-
-python main.py
+ollama pull qwen2.5-vl:14b
